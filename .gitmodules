@@ -1,0 +1,3 @@
+[submodule "vendor/vllm-factory-fstn"]
+	path = vendor/vllm-factory-fstn
+	url = https://github.com/fastino-ai/vllm-factory-fstn.git
