@@ -1,5 +1,7 @@
 FROM vllm/vllm-openai:v0.20.0
 
+LABEL org.opencontainers.image.source="https://github.com/maxdswain/gliner-haystack"
+
 # vLLM Factory's GLiNER2.5 plugin lives in the source tree, not the older PyPI release.
 COPY vendor/vllm-factory-fstn /opt/vllm-factory-fstn
 RUN pip install --no-cache-dir -e /opt/vllm-factory-fstn \

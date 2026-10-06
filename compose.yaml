@@ -1,7 +1,6 @@
 services:
   gliner:
-    build: .
-    image: gliner-vllm-factory:local
+    image: ghcr.io/maxdswain/vllm-gliner:latest
     ports:
       - "8000:8000"
     gpus:
