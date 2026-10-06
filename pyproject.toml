@@ -12,6 +12,11 @@ dependencies = [
     "httpx2>=0.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/maxdswain/gliner-haystack"
+Repository = "https://github.com/maxdswain/gliner-haystack"
+Issues = "https://github.com/maxdswain/gliner-haystack/issues"
+
 [dependency-groups]
 dev = ["poethepoet>=0.48", "ruff>=0.13", "pyrefly>=0.35"]
 test = ["pytest>=8,<10"]
