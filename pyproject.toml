@@ -1,14 +1,39 @@
 [project]
 name = "gliner-haystack"
 version = "0.1.0"
-description = "Add your description here"
+description = "Haystack entity extractors backed by GLiNER 2.5"
 readme = "README.md"
 authors = [
     { name = "Max Swain"}
 ]
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "haystack-ai>=3.0,<4",
+    "httpx2>=0.1",
+]
+
+[dependency-groups]
+dev = ["poethepoet>=0.48", "ruff>=0.13", "pyrefly>=0.35"]
+test = ["pytest>=8,<10"]
+
+[tool.poe.tasks]
+test = "pytest -m 'not integration' tests"
+test-integration = "pytest -m integration tests"
+lint = "ruff check src tests"
+format = "ruff format --check src tests"
+types = "pyrefly check src tests"
+check = ["lint", "format", "types", "test"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: requires a live vLLM GLiNER2.5 server (CPU or GPU)"]
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "haystack_integrations.components.extractors.gliner"
