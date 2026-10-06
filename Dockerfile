@@ -4,5 +4,5 @@ FROM vllm/vllm-openai:v0.20.0
 COPY vendor/vllm-factory-fstn /opt/vllm-factory-fstn
 RUN pip install --no-cache-dir -e /opt/vllm-factory-fstn \
     && pip install --no-cache-dir \
-       'gliner2 @ git+https://github.com/fastino-ai/GLiNER2.git@af36b41cf948995b885cf6a33cc0bc4730be9620' \
+       'gliner2 @ https://codeload.github.com/fastino-ai/GLiNER2/tar.gz/af36b41cf948995b885cf6a33cc0bc4730be9620' \
        'gliner>=0.2.26'
