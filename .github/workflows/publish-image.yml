@@ -28,3 +28,10 @@ jobs:
           context: .
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/vllm-gliner:latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: VLLM_BASE_IMAGE=vllm/vllm-openai-cpu:v0.20.0-x86_64
+          tags: ghcr.io/${{ github.repository_owner }}/vllm-gliner:latest-cpu
