@@ -1,0 +1,126 @@
+name: Check and publish Python package
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Serialize releases, including the version commit and tag, across main pushes.
+concurrency:
+  group: python-package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv python install ${{ matrix.python-version }}
+      - run: uv sync --locked --python ${{ matrix.python-version }} --group dev --group test
+      # Poe invokes uv for its subtasks; keep nested uv calls on the matrix interpreter.
+      - run: uv run --locked --python ${{ matrix.python-version }} --group dev --group test poe check
+        env:
+          UV_PYTHON: ${{ matrix.python-version }}
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+      - uses: orhun/git-cliff-action@v4
+        with:
+          version: v2.14.2
+          args: --unreleased --output release-notes.md
+      - id: version
+        name: Determine next version from Conventional Commits
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/git-cliff/bin:$PATH"
+          git-cliff --unreleased --context > release-context.json
+          if ! jq -e 'any(.[]; .commits | length > 0)' release-context.json >/dev/null; then
+            echo 'No releasable Conventional Commits; skipping release.'
+            exit 0
+          fi
+          version="$(git-cliff --unreleased --bumped-version)"
+          version="${version#v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid version: $version" >&2; exit 1; }
+          if git show-ref --verify --quiet "refs/tags/v$version"; then
+            echo "Tag v$version already exists" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Bump version and verify distributions
+        if: steps.version.outputs.version != ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          uv version "$VERSION" --no-sync
+          uv lock --check
+          uv build --no-sources
+          test -f "dist/gliner_haystack-${VERSION}-py3-none-any.whl"
+          test -f "dist/gliner_haystack-${VERSION}.tar.gz"
+      - uses: actions/upload-artifact@v4
+        if: steps.version.outputs.version != ''
+        with:
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error
+      - name: Commit version and publish GitHub Release
+        if: steps.version.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; refusing to replace it." >&2
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add pyproject.toml uv.lock
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(release): $tag"
+            git push origin HEAD:main
+          fi
+          git tag "$tag"
+          git push origin "refs/tags/$tag"
+          gh release create "$tag" --verify-tag --title "gliner-haystack $tag" --notes-file release-notes.md
+
+  publish:
+    if: needs.release.outputs.version != ''
+    needs: release
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/gliner-haystack
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

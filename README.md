@@ -38,6 +38,19 @@ To run tests against a live server:
 `GLINER_INTEGRATION_URL=http://localhost:8000 uv run --group dev --group test poe test-integration`.
 Integration tests skip when the variable is unset.
 
+## Python package releases
+
+`.github/workflows/publish-package.yml` runs offline checks on pull requests and pushes to `main`
+(Python 3.11 and 3.13). After successful checks on `main`, git-cliff finds releasable
+Conventional Commits (`feat`, `fix`, `perf`, or breaking changes). If there are any, the
+workflow updates `pyproject.toml` and `uv.lock`, builds distributions, commits the version,
+creates a `vX.Y.Z` tag and GitHub Release with generated notes, then publishes those
+artifacts to PyPI using the `pypi` GitHub environment and PyPI Trusted Publishing. The
+initial release is `v0.1.0`; Docker-scoped commits do not release the Python package.
+The release job needs permission to push its version commit and tag to `main` (check branch
+protection rules). GitHub's `GITHUB_TOKEN` does not trigger another workflow when it creates
+a release, so the PyPI publish job runs in the same workflow after the release job succeeds.
+
 ## Quick start
 
 Install Docker with Compose, then:

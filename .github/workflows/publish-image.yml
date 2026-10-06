@@ -3,6 +3,13 @@ name: Publish Docker image
 on:
   push:
     branches: [main]
+    # Only image inputs or this workflow need to trigger a rebuild.
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .gitmodules
+      - vendor/vllm-factory-fstn
+      - .github/workflows/publish-image.yml
   workflow_dispatch:
 
 permissions:
