@@ -4,10 +4,10 @@
 [GLiNER2 and GLiNER2.5](https://github.com/fastino-ai/GLiNER2). Extract entities from text
 or enrich Haystack `Document` metadata, with synchronous and asynchronous pipeline support.
 
-The Python package is a **client** for a compatible GLiNER server exposing vLLM Factory's
-`POST /pooling` endpoint; it does not download or run a model in the Python process.
-You can connect to an existing server or use the [Docker images](#serving-gliner-with-docker)
-provided by this repository for a production-ready, higher-throughput inference backend.
+The Python package is a **client**, not a model runtime. It requires a running
+vLLM Factory server from one of the prebuilt GLiNER Docker images below; installing
+the package alone does not download a model or perform inference. Start the
+[required inference server](#required-docker-inference-server) before using the components.
 
 ## Install
 
@@ -16,9 +16,11 @@ pip install gliner-haystack
 # Or: uv add gliner-haystack
 ```
 
-Requires Python 3.11+ and Haystack 3.x. Start a compatible GLiNER2 or GLiNER2.5 server before
-running the examples below. The default endpoint is `http://localhost:8000` and the
-model name used in requests is `/models/current` (matching the supplied Compose files).
+Requires Python 3.11+ and Haystack 3.x. **You must also run a compatible Docker
+image** (GPU or CPU) serving GLiNER2 or GLiNER2.5 before using the examples below.
+The default endpoint is `http://localhost:8000` and the model name in requests is
+`/models/current`, matching the supplied Compose files. Set `api_base_url` to the
+server's URL if it runs elsewhere.
 
 ## Import
 
@@ -157,12 +159,12 @@ vLLM Factory also serves older span-based GLiNER models, but those plugins take 
 not support that response format. They are entity extractors, not wrappers for other
 GLiNER2 tasks such as relation extraction or classification.
 
-## Serving GLiNER with Docker
+## Required Docker inference server
 
-For production inference, this repository publishes vLLM Factory-based images
-configured for GLiNER2.5 by default, for NVIDIA GPUs and x86-64 CPUs. Both serve `POST /pooling` on port 8000.
-The GPU image is intended for higher-throughput deployments; the CPU image also
-allows development and integration testing on machines without a supported GPU.
+Run a vLLM Factory GLiNER Docker image before using the Python components. The
+Compose files pull the images from GHCR; both serve `POST /pooling` on port 8000
+and default to GLiNER2.5. Use the GPU image for higher-throughput inference or
+the x86-64 CPU image on machines without a supported GPU.
 
 | Image | Compose file | Requirements |
 | --- | --- | --- |
@@ -175,14 +177,12 @@ docker compose up -d                      # GPU
 # docker compose -f compose.cpu.yaml up -d  # CPU instead
 ```
 
-The first startup downloads and prepares `fastino/gliner2.5-multi-v1` in a persistent
+The image's first startup downloads and prepares `fastino/gliner2.5-multi-v1` in a persistent
 Hugging Face cache; wait until the server is ready before sending requests. With either
 Compose file, the Python examples above work without changes. To serve GLiNER2 instead,
 change the Compose file's environment entries to `MODEL_ID: fastino/gliner2-large-v1`,
 `MODEL_PLUGIN: deberta_gliner2`, and `IO_PLUGIN: deberta_gliner2_io` (keep the
-`/models/current` path). To build an image yourself,
-initialize the submodule and build with `docker build -t vllm-gliner .`; the Dockerfile
-supports a `VLLM_BASE_IMAGE` build argument for selecting the CPU base image.
+`/models/current` path).
 
 You can also call the server directly:
 
@@ -212,5 +212,4 @@ these tests; a GPU is not required.
 Python package checks and publishing are defined in `.github/workflows/publish-package.yml`.
 After checks pass on `main`, releasable Conventional Commits drive git-cliff release
 notes, a version bump, a GitHub Release, and PyPI Trusted Publishing via the `pypi`
-GitHub environment. Docker image publishing is a separate workflow that rebuilds only
-when image inputs change.
+GitHub environment.
