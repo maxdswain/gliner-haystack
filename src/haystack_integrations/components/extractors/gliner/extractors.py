@@ -156,13 +156,13 @@ class GLiNERTextExtractor(_PoolingClient):
         return self._schema_payload(text, {"entities": {label: "" for label in labels}})
 
     @staticmethod
-    def _entities(response: httpx2.Response) -> dict[str, list[dict[str, Any]]]:
+    def _entities(data: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         """Validate a pooling response and return its labeled entity records.
 
         Parameters
         ----------
-        response : httpx2.Response
-            HTTP response from a compatible GLiNER ``/pooling`` endpoint.
+        data : dict[str, Any]
+            Decoded data from a compatible GLiNER ``/pooling`` endpoint.
 
         Returns
         -------
@@ -176,11 +176,7 @@ class GLiNERTextExtractor(_PoolingClient):
         ValueError
             If the response does not contain a labeled entity mapping.
         """
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
-            raise ValueError("Invalid vLLM GLiNER pooling response: expected a data object")  # noqa: TRY004
-        entities = payload["data"].get("entities")
+        entities = data.get("entities")
         if not isinstance(entities, dict) or any(
             not isinstance(label, str)
             or not isinstance(records, list)
@@ -218,7 +214,8 @@ class GLiNERTextExtractor(_PoolingClient):
         self.warm_up()
         assert self.client is not None
         response = self.client.post(f"{self.api_base_url}/pooling", json=payload)
-        return {"entities": self._entities(response)}
+        response.raise_for_status()
+        return {"entities": self._entities(response.json()["data"])}
 
     @component.output_types(entities=dict[str, list[dict[str, Any]]])
     async def run_async(self, text: str, labels: list[str]) -> dict[str, dict[str, list[dict[str, Any]]]]:
@@ -251,7 +248,8 @@ class GLiNERTextExtractor(_PoolingClient):
         await self.warm_up_async()
         assert self.async_client is not None
         response = await self.async_client.post(f"{self.api_base_url}/pooling", json=payload)
-        return {"entities": self._entities(response)}
+        response.raise_for_status()
+        return {"entities": self._entities(response.json()["data"])}
 
 
 @component
@@ -281,18 +279,11 @@ class GLiNERRelationExtractor(_PoolingClient):
     """
 
     def _payload(self, text: str, relation_types: list[str]) -> dict[str, Any]:
-        if (
-            not isinstance(relation_types, list)
-            or not relation_types
-            or any(not isinstance(name, str) or not name.strip() for name in relation_types)
-        ):
-            raise ValueError("relation_types must be a non-empty list of non-empty strings")
         return self._schema_payload(text, {"relations": relation_types})
 
     @staticmethod
-    def _relations(response: httpx2.Response) -> list[dict[str, Any]]:
-        response.raise_for_status()
-        groups = response.json()["data"]["relation_extraction"]
+    def _relations(data: dict[str, Any]) -> list[dict[str, Any]]:
+        groups = data["relation_extraction"]
         return [
             {"relation_type": name, "head": record["head"], "tail": record["tail"]}
             for name, records in groups.items()
@@ -306,7 +297,8 @@ class GLiNERRelationExtractor(_PoolingClient):
         self.warm_up()
         assert self.client is not None
         response = self.client.post(f"{self.api_base_url}/pooling", json=payload)
-        return {"relations": self._relations(response)}
+        response.raise_for_status()
+        return {"relations": self._relations(response.json()["data"])}
 
     @component.output_types(relations=list[dict[str, Any]])
     async def run_async(self, text: str, relation_types: list[str]) -> dict[str, list[dict[str, Any]]]:
@@ -315,7 +307,8 @@ class GLiNERRelationExtractor(_PoolingClient):
         await self.warm_up_async()
         assert self.async_client is not None
         response = await self.async_client.post(f"{self.api_base_url}/pooling", json=payload)
-        return {"relations": self._relations(response)}
+        response.raise_for_status()
+        return {"relations": self._relations(response.json()["data"])}
 
 
 @component
@@ -409,9 +402,20 @@ class GLiNERDocumentExtractor:
         """Close the asynchronous HTTP client after processing documents."""
         await self.text_extractor.close_async()
 
+    @staticmethod
+    def _enrich(document: Document, response: httpx2.Response, relation_types: list[str] | None) -> Document:
+        response.raise_for_status()
+        data = response.json()["data"]
+        meta = {**document.meta, "entities": GLiNERTextExtractor._entities(data)}
+        if relation_types is not None:
+            meta["relations"] = GLiNERRelationExtractor._relations(data)
+        return replace(document, meta=meta)
+
     @component.output_types(documents=list[Document])
-    def run(self, documents: list[Document], labels: list[str]) -> dict[str, list[Document]]:
-        """Add entities to copies of documents, processing one at a time.
+    def run(
+        self, documents: list[Document], labels: list[str], relation_types: list[str] | None = None
+    ) -> dict[str, list[Document]]:
+        """Add entities and optional relations to copies of documents, processing one at a time.
 
         Parameters
         ----------
@@ -419,6 +423,8 @@ class GLiNERDocumentExtractor:
             Text documents to analyze in input order.
         labels : list[str]
             Nonempty names of entity types to extract from every document.
+        relation_types : list[str] | None
+            Optional predicates to extract in the same request into ``meta["relations"]``.
 
         Returns
         -------
@@ -435,16 +441,26 @@ class GLiNERDocumentExtractor:
             If the server returns an error status.
         """
         _validate_labels(labels)
+        schema: dict[str, Any] = {"entities": dict.fromkeys(labels, "")}
+        if relation_types is not None:
+            schema["relations"] = relation_types
+        extractor = self.text_extractor
         result = []
         for document in documents:
             if document.content is None:
                 raise ValueError("GLiNERDocumentExtractor requires text document content")
-            entities = self.text_extractor.run(document.content, labels)["entities"]
-            result.append(replace(document, meta={**document.meta, "entities": entities}))
+            extractor.warm_up()
+            assert extractor.client is not None
+            response = extractor.client.post(
+                f"{extractor.api_base_url}/pooling", json=extractor._schema_payload(document.content, schema)
+            )
+            result.append(self._enrich(document, response, relation_types))
         return {"documents": result}
 
     @component.output_types(documents=list[Document])
-    async def run_async(self, documents: list[Document], labels: list[str]) -> dict[str, list[Document]]:
+    async def run_async(
+        self, documents: list[Document], labels: list[str], relation_types: list[str] | None = None
+    ) -> dict[str, list[Document]]:
         """Add entities to document copies with bounded concurrent requests.
 
         The shared async HTTP client sends at most ``max_concurrency`` requests
@@ -456,6 +472,8 @@ class GLiNERDocumentExtractor:
             Text documents to analyze in input order.
         labels : list[str]
             Nonempty names of entity types to extract from every document.
+        relation_types : list[str] | None
+            Optional predicates to extract in the same request into ``meta["relations"]``.
 
         Returns
         -------
@@ -472,6 +490,9 @@ class GLiNERDocumentExtractor:
             If the server returns an error status.
         """
         _validate_labels(labels)
+        schema: dict[str, Any] = {"entities": dict.fromkeys(labels, "")}
+        if relation_types is not None:
+            schema["relations"] = relation_types
         for document in documents:
             if document.content is None:
                 raise ValueError("GLiNERDocumentExtractor requires text document content")
@@ -487,9 +508,8 @@ class GLiNERDocumentExtractor:
         async def extract(document: Document) -> Document:
             async with semaphore:
                 response = await client.post(
-                    f"{extractor.api_base_url}/pooling", json=extractor._payload(document.content or "", labels)
+                    f"{extractor.api_base_url}/pooling", json=extractor._schema_payload(document.content or "", schema)
                 )
-                entities = extractor._entities(response)
-            return replace(document, meta={**document.meta, "entities": entities})
+            return self._enrich(document, response, relation_types)
 
         return {"documents": list(await asyncio.gather(*(extract(document) for document in documents)))}

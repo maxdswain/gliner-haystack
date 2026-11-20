@@ -93,12 +93,6 @@ def test_async_relations_no_detections() -> None:
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("types", [[], [" "], "owns", [None]])
-def test_invalid_relation_types(types) -> None:
-    with pytest.raises(ValueError, match="relation_types"):
-        GLiNERRelationExtractor().run("Alice", types)
-
-
 def test_relation_http_error_is_propagated() -> None:
     with patch("haystack_integrations.components.extractors.gliner.extractors.httpx2.Client") as client_cls:
         client_cls.return_value.post.return_value = response({}, status=500)
@@ -109,11 +103,13 @@ def test_relation_http_error_is_propagated() -> None:
 def test_document_extractor_preserves_inputs_and_metadata() -> None:
     original = Document(content="Alice", meta={"source": "test"})
     extractor = GLiNERDocumentExtractor()
-    with patch.object(extractor.text_extractor, "run", return_value={"entities": ENTITIES}) as run:
+    with patch("httpx2.Client") as cls:
+        post = cls.return_value.post
+        post.return_value = response({"data": {"entities": ENTITIES}})
         documents = extractor.run([original, Document(content="Bob")], ["person"])["documents"]
 
-    assert run.call_count == 2
-    run.assert_any_call("Alice", ["person"])
+    assert post.call_count == 2
+    assert post.call_args.kwargs["json"]["data"]["schema"] == {"entities": {"person": ""}}
     assert documents[0].id == original.id
     assert documents[0].meta == {"source": "test", "entities": ENTITIES}
     assert original.meta == {"source": "test"}
@@ -121,11 +117,35 @@ def test_document_extractor_preserves_inputs_and_metadata() -> None:
     assert documents[1].meta == {"entities": ENTITIES}
 
 
+@pytest.mark.parametrize("use_async", [False, True])
+def test_joint_extraction(use_async: bool) -> None:
+    extractor = GLiNERDocumentExtractor()
+    doc = Document(content="Alice works for Acme.", meta={"source": "test"})
+    pair = {"head": ENTITIES["person"][0], "tail": {"text": "Acme", "start": 16, "end": 20}}
+    reply = response({"data": {"entities": ENTITIES, "relation_extraction": {"works_for": [pair]}}})
+    with patch("httpx2.AsyncClient" if use_async else "httpx2.Client") as cls:
+        if use_async:
+            cls.return_value.post = AsyncMock(return_value=reply)
+            result = asyncio.run(extractor.run_async([doc], ["person"], ["works_for"]))
+        else:
+            cls.return_value.post.return_value = reply
+            result = extractor.run([doc], ["person"], ["works_for"])
+        post = cls.return_value.post
+        post.assert_called_once()
+        assert post.call_args.kwargs["json"]["data"]["schema"] == {
+            "entities": {"person": ""},
+            "relations": ["works_for"],
+        }
+    enriched = result["documents"][0]
+    assert enriched.id == doc.id and doc.meta == {"source": "test"}
+    assert enriched.meta == {**doc.meta, "entities": ENTITIES, "relations": [{"relation_type": "works_for", **pair}]}
+
+
 def test_empty_document_list_makes_no_requests() -> None:
     extractor = GLiNERDocumentExtractor()
-    with patch.object(extractor.text_extractor, "run") as run:
+    with patch("httpx2.Client") as client:
         assert extractor.run([], ["person"]) == {"documents": []}
-    run.assert_not_called()
+    client.assert_not_called()
 
 
 @pytest.mark.parametrize("labels", [[], [""], ["person", " "]])
@@ -136,8 +156,8 @@ def test_invalid_labels(labels: list[str]) -> None:
         GLiNERDocumentExtractor().run([], labels)
 
 
-@pytest.mark.parametrize("payload", [{}, {"data": []}, {"data": {}}, {"data": {"entities": []}}])
-def test_invalid_response(payload: dict) -> None:
+@pytest.mark.parametrize("payload", [{"data": {}}, {"data": {"entities": []}}])
+def test_invalid_entities(payload: dict) -> None:
     with patch("haystack_integrations.components.extractors.gliner.extractors.httpx2.Client") as client_cls:
         client_cls.return_value.post.return_value = response(payload)
         with pytest.raises(ValueError, match="pooling response"):

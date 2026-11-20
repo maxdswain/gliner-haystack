@@ -95,6 +95,18 @@ extractor.close()
 The component returns new documents, preserves their existing metadata, and adds
 `meta["entities"]`; it does not change the input documents or their text.
 
+For a knowledge graph, pass `relation_types` to `GLiNERDocumentExtractor.run` or `run_async` to extract entities and directed relations in **one pooling request per document**. Omit it for entity-only extraction:
+
+```python
+chunk = extractor.run(
+    documents=[Document(content="Alice works for Acme.")],
+    labels=["person", "organization"],
+    relation_types=["works_for"],
+)["documents"][0]
+for relation in chunk.meta["relations"]:
+    print(relation["head"]["text"], relation["relation_type"], relation["tail"]["text"])
+```
+
 ### Use in a Haystack pipeline
 
 ```python
