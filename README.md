@@ -1,6 +1,6 @@
 # gliner-haystack
 
-[Haystack](https://haystack.deepset.ai/) components for extracting named entities with
+[Haystack](https://haystack.deepset.ai/) components for extracting named entities and directed relations with
 [GLiNER2 and GLiNER2.5](https://github.com/fastino-ai/GLiNER2). Extract entities from text
 or enrich Haystack `Document` metadata, with synchronous and asynchronous pipeline support.
 
@@ -58,6 +58,22 @@ are illustrative):
 Labels are **run inputs**, so you can reuse the same component with different labels.
 The extractor requests character spans and confidence from the server; returned records
 reflect the server's actual detections.
+
+### Extract directed relations
+
+Use `GLiNERRelationExtractor` with a GLiNER2 or GLiNER2.5 `/pooling` plugin that supports relation schemas. No second model service is needed.
+
+```python
+from haystack_integrations.components.extractors.gliner import GLiNERRelationExtractor
+
+extractor = GLiNERRelationExtractor()
+result = extractor.run(text="Alice works for Acme.", relation_types=["works_for"])
+for relation in result["relations"]:
+    print(relation["head"]["text"], relation["relation_type"], relation["tail"]["text"])
+    # Example detection: Alice works_for Acme
+```
+
+The `relations` output is an empty list when nothing is detected. Each endpoint preserves the server's text and any confidence and character offsets it supplies. Offsets can be absent: do not assume the first matching substring is the correct mention. The component does not resolve entity IDs or write graph edges. Use `run_async` and `close_async` for asynchronous pipelines.
 
 ### Enrich Haystack documents
 

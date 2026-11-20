@@ -25,35 +25,8 @@ def _validate_labels(labels: list[str]) -> None:
         raise ValueError("labels must be a non-empty list of non-empty strings")
 
 
-@component
-class GLiNERTextExtractor:
-    """Extract labeled entities from text using a remote GLiNER2 or GLiNER2.5 server.
-
-    Connect to vLLM Factory's ``POST /pooling`` endpoint. The server must be
-    running separately; this component does not load a model locally. Pass
-    entity labels to each call, so the same instance can extract different
-    types of entities from different texts. The ``entities`` output maps each
-    label to records containing text, character offsets, and confidence when
-    the server detects that label.
-
-    Examples
-    --------
-    Run against the GLiNER2.5 server at the default URL::
-
-        from haystack_integrations.components.extractors.gliner import GLiNERTextExtractor
-
-        extractor = GLiNERTextExtractor()
-        result = extractor.run(
-            text="Alice works at Acme.",
-            labels=["person", "organization"],
-        )
-        entities = result["entities"]
-        extractor.close()
-
-    Use ``await extractor.run_async(text=..., labels=...)`` and
-    ``await extractor.close_async()`` inside an async application or a
-    Haystack 3 ``Pipeline.run_async`` call.
-    """
+class _PoolingClient:
+    """Shared transport for schema-based GLiNER components."""
 
     def __init__(
         self,
@@ -127,6 +100,43 @@ class GLiNERTextExtractor:
             await self.async_client.aclose()
             self.async_client = None
 
+    def _schema_payload(self, text: str, schema: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "data": {
+                "text": text,
+                "schema": schema,
+                "runtime": "classic",
+                "threshold": self.threshold,
+                "include_spans": True,
+                "include_confidence": True,
+            },
+        }
+
+
+@component
+class GLiNERTextExtractor(_PoolingClient):
+    """Extract labeled entities from text using a remote GLiNER2 or GLiNER2.5 server.
+
+    Pass entity labels to each call. The ``entities`` output maps each label to
+    records containing text, character offsets, and confidence.
+
+    Examples
+    --------
+    With a pooling server running on localhost:8000, extract mentions and use
+    their offsets to recover the exact substring in the source text::
+
+        from haystack_integrations.components.extractors.gliner import GLiNERTextExtractor
+
+        extractor = GLiNERTextExtractor()
+        text = "Alice works for Acme."
+        result = extractor.run(text=text, labels=["person", "organization"])
+        for label, mentions in result["entities"].items():
+            for mention in mentions:
+                span = text[mention["start"] : mention["end"]]
+                print(label, span)  # e.g. person Alice
+    """
+
     def _payload(self, text: str, labels: list[str]) -> dict[str, Any]:
         """Build a schema-based pooling request for text and entity labels.
 
@@ -143,17 +153,7 @@ class GLiNERTextExtractor:
             JSON request body with the model, schema, and extraction options.
         """
         _validate_labels(labels)
-        return {
-            "model": self.model,
-            "data": {
-                "text": text,
-                "schema": {"entities": {label: "" for label in labels}},
-                "runtime": "classic",
-                "threshold": self.threshold,
-                "include_spans": True,
-                "include_confidence": True,
-            },
-        }
+        return self._schema_payload(text, {"entities": {label: "" for label in labels}})
 
     @staticmethod
     def _entities(response: httpx2.Response) -> dict[str, list[dict[str, Any]]]:
@@ -252,6 +252,70 @@ class GLiNERTextExtractor:
         assert self.async_client is not None
         response = await self.async_client.post(f"{self.api_base_url}/pooling", json=payload)
         return {"entities": self._entities(response)}
+
+
+@component
+class GLiNERRelationExtractor(_PoolingClient):
+    """Extract directed relations from text using a relation-capable GLiNER pooling server.
+
+    Each output record contains ``relation_type``, ``head`` and ``tail``. Endpoints
+    retain the server's text, confidence and offsets when available. These are
+    mentions in the input text, not resolved knowledge graph identities.
+
+    Examples
+    --------
+    With a relation-capable pooling server running on localhost:8000, request
+    a predicate and read the detected mentions in subject-to-object order::
+
+        from haystack_integrations.components.extractors.gliner import GLiNERRelationExtractor
+
+        extractor = GLiNERRelationExtractor()
+        result = extractor.run(text="Alice works for Acme.", relation_types=["works_for"])
+        for relation in result["relations"]:
+            subject = relation["head"]["text"]
+            predicate = relation["relation_type"]
+            obj = relation["tail"]["text"]
+            print(subject, predicate, obj)  # e.g. Alice works_for Acme
+
+    If no relation is detected, ``result["relations"]`` is an empty list.
+    """
+
+    def _payload(self, text: str, relation_types: list[str]) -> dict[str, Any]:
+        if (
+            not isinstance(relation_types, list)
+            or not relation_types
+            or any(not isinstance(name, str) or not name.strip() for name in relation_types)
+        ):
+            raise ValueError("relation_types must be a non-empty list of non-empty strings")
+        return self._schema_payload(text, {"relations": relation_types})
+
+    @staticmethod
+    def _relations(response: httpx2.Response) -> list[dict[str, Any]]:
+        response.raise_for_status()
+        groups = response.json()["data"]["relation_extraction"]
+        return [
+            {"relation_type": name, "head": record["head"], "tail": record["tail"]}
+            for name, records in groups.items()
+            for record in records
+        ]
+
+    @component.output_types(relations=list[dict[str, Any]])
+    def run(self, text: str, relation_types: list[str]) -> dict[str, list[dict[str, Any]]]:
+        """Extract directed head/tail mentions for the supplied relation types."""
+        payload = self._payload(text, relation_types)
+        self.warm_up()
+        assert self.client is not None
+        response = self.client.post(f"{self.api_base_url}/pooling", json=payload)
+        return {"relations": self._relations(response)}
+
+    @component.output_types(relations=list[dict[str, Any]])
+    async def run_async(self, text: str, relation_types: list[str]) -> dict[str, list[dict[str, Any]]]:
+        """Extract directed head/tail mentions without blocking the event loop."""
+        payload = self._payload(text, relation_types)
+        await self.warm_up_async()
+        assert self.async_client is not None
+        response = await self.async_client.post(f"{self.api_base_url}/pooling", json=payload)
+        return {"relations": self._relations(response)}
 
 
 @component

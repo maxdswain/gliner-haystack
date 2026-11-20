@@ -7,7 +7,11 @@ import httpx2
 import pytest
 from haystack import Document, Pipeline
 
-from haystack_integrations.components.extractors.gliner import GLiNERDocumentExtractor, GLiNERTextExtractor
+from haystack_integrations.components.extractors.gliner import (
+    GLiNERDocumentExtractor,
+    GLiNERRelationExtractor,
+    GLiNERTextExtractor,
+)
 
 ENTITIES = {"person": [{"text": "Alice", "start": 0, "end": 5, "confidence": 0.98}]}
 
@@ -40,6 +44,66 @@ def test_text_extractor_sends_gliner25_pooling_request() -> None:
             "include_confidence": True,
         },
     }
+
+
+def test_relation_pipeline() -> None:
+    extractor = GLiNERRelationExtractor(threshold=0.4)
+    pipeline = Pipeline()
+    pipeline.add_component("re", extractor)
+    head = {"text": "Alice", "start": 0, "end": 5, "confidence": 0.98}
+    tail = {"text": "Acme", "confidence": 0.91}
+    text = "Alice works at Acme"
+    types = ["works_for", "owns"]
+    with patch("haystack_integrations.components.extractors.gliner.extractors.httpx2.Client") as client_cls:
+        client = client_cls.return_value
+        client.post.return_value = response(
+            {"data": {"relation_extraction": {"works_for": [{"head": head, "tail": tail}], "owns": []}}}
+        )
+        assert pipeline.run({"re": {"text": text, "relation_types": types}}) == {
+            "re": {"relations": [{"relation_type": "works_for", "head": head, "tail": tail}]}
+        }
+        client.post.assert_called_once_with(
+            "http://localhost:8000/pooling",
+            json={
+                "model": "/models/current",
+                "data": {
+                    "schema": {"relations": types},
+                    "text": text,
+                    "threshold": 0.4,
+                    "runtime": "classic",
+                    "include_confidence": True,
+                    "include_spans": True,
+                },
+            },
+        )
+        extractor.close()
+        client.close.assert_called_once()
+
+
+def test_async_relations_no_detections() -> None:
+    async def scenario() -> None:
+        extractor = GLiNERRelationExtractor()
+        with patch("haystack_integrations.components.extractors.gliner.extractors.httpx2.AsyncClient") as cls:
+            cls.return_value.post = AsyncMock(return_value=response({"data": {"relation_extraction": {"owns": []}}}))
+            cls.return_value.aclose = AsyncMock()
+            assert await extractor.run_async("Alice", ["owns"]) == {"relations": []}
+            await extractor.close_async()
+            cls.return_value.aclose.assert_awaited_once()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("types", [[], [" "], "owns", [None]])
+def test_invalid_relation_types(types) -> None:
+    with pytest.raises(ValueError, match="relation_types"):
+        GLiNERRelationExtractor().run("Alice", types)
+
+
+def test_relation_http_error_is_propagated() -> None:
+    with patch("haystack_integrations.components.extractors.gliner.extractors.httpx2.Client") as client_cls:
+        client_cls.return_value.post.return_value = response({}, status=500)
+        with pytest.raises(httpx2.HTTPStatusError):
+            GLiNERRelationExtractor().run("Alice", ["owns"])
 
 
 def test_document_extractor_preserves_inputs_and_metadata() -> None:

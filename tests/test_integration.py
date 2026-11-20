@@ -6,7 +6,11 @@ import os
 import pytest
 from haystack import Document
 
-from haystack_integrations.components.extractors.gliner import GLiNERDocumentExtractor, GLiNERTextExtractor
+from haystack_integrations.components.extractors.gliner import (
+    GLiNERDocumentExtractor,
+    GLiNERRelationExtractor,
+    GLiNERTextExtractor,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -31,6 +35,18 @@ def test_live_text_extraction(server_url: str) -> None:
     for records in entities.values():
         for entity in records:
             assert "start" in entity and "end" in entity and "confidence" in entity
+
+
+def test_live_relation_extraction(server_url: str) -> None:
+    extractor = GLiNERRelationExtractor(api_base_url=server_url, http_client_kwargs={"timeout": 180})
+    try:
+        relations = extractor.run("Alice works for Acme.", ["works_for"])["relations"]
+    finally:
+        extractor.close()
+    assert any(
+        r["relation_type"] == "works_for" and r["head"]["text"] == "Alice" and r["tail"]["text"] == "Acme"
+        for r in relations
+    )
 
 
 def test_live_async_text_extraction(server_url: str) -> None:
